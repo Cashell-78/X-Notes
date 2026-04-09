@@ -41,6 +41,9 @@ import { format } from 'date-fns';
 import { Preferences } from '@capacitor/preferences';
 import { Toast } from '@capacitor/toast';
 import { Share } from '@capacitor/share';
+import { LocalNotifications } from '@capacitor/local-notifications';
+import { Haptics, ImpactStyle } from '@capacitor/haptics';
+import { StatusBar, Style } from '@capacitor/status-bar';
 import { cn } from './lib/utils';
 import { Note, AppSettings } from './types';
 
@@ -67,7 +70,7 @@ const SplashScreen = ({ onComplete }: { onComplete: () => void }) => (
       <div className="mb-6 flex h-20 w-20 sm:h-24 sm:w-24 items-center justify-center rounded-3xl bg-app-card shadow-2xl shadow-app-text/10 border border-app-border">
         <FileText className="text-app-text w-10 h-10 sm:w-12 sm:h-12" strokeWidth={2.5} />
       </div>
-      <h1 className="text-3xl sm:text-4xl font-black tracking-tighter text-app-text">X NOTES</h1>
+      <h1 className="text-2xl sm:text-3xl font-black tracking-tighter text-app-text">X NOTES</h1>
       <motion.div 
         initial={{ width: 0 }}
         animate={{ width: 40 }}
@@ -167,6 +170,14 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState('');
   const contentRef = useRef<HTMLTextAreaElement>(null);
 
+  const triggerHaptic = async () => {
+    try {
+      await Haptics.impact({ style: ImpactStyle.Light });
+    } catch (e) {
+      console.warn('Haptics not available');
+    }
+  };
+
   const triggerResize = () => {
     if (contentRef.current) {
       contentRef.current.style.height = '0px';
@@ -200,13 +211,39 @@ export default function App() {
     const root = window.document.documentElement;
     root.classList.remove('light', 'dark');
 
+    let activeTheme = theme;
     if (theme === 'system') {
-      const systemTheme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
-      root.classList.add(systemTheme);
-    } else {
-      root.classList.add(theme);
+      activeTheme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
     }
+
+    root.classList.add(activeTheme);
+
+    // Sync Status Bar
+    const syncStatusBar = async () => {
+      try {
+        await StatusBar.setBackgroundColor({ color: activeTheme === 'dark' ? '#000000' : '#f8fafc' });
+        await StatusBar.setStyle({ style: activeTheme === 'dark' ? Style.Dark : Style.Light });
+      } catch (e) {
+        console.warn('StatusBar not available');
+      }
+    };
+    syncStatusBar();
   }, [theme]);
+
+  // Request Notification Permissions
+  useEffect(() => {
+    const requestPerms = async () => {
+      try {
+        const status = await LocalNotifications.checkPermissions();
+        if (status.display !== 'granted') {
+          await LocalNotifications.requestPermissions();
+        }
+      } catch (e) {
+        console.warn('LocalNotifications not available');
+      }
+    };
+    requestPerms();
+  }, []);
 
   // Load notes and tabs from Capacitor Preferences
   useEffect(() => {
@@ -241,7 +278,7 @@ export default function App() {
       } finally {
         // Ensure state updates are processed before enabling saving
         setTimeout(() => setIsLoading(false), 100);
-        setTimeout(() => setShowSplash(false), 2000);
+        setTimeout(() => setShowSplash(false), 500);
       }
     };
     loadData();
@@ -435,6 +472,7 @@ export default function App() {
   };
 
   const handleCreateNote = () => {
+    triggerHaptic();
     const newNote: Note = {
       id: crypto.randomUUID(),
       title: '',
@@ -469,6 +507,7 @@ export default function App() {
 
   const handleToggleFavorite = (id: string, e?: React.MouseEvent) => {
     e?.stopPropagation();
+    triggerHaptic();
     setNotes(prev => prev.map(n => n.id === id ? { ...n, isFavorite: !n.isFavorite } : n));
     if (currentNote?.id === id) {
       setCurrentNote(prev => prev ? { ...prev, isFavorite: !prev.isFavorite } : null);
@@ -487,8 +526,10 @@ export default function App() {
     setCurrentNote(null);
   };
 
-  const handleSaveNote = () => {
+  const handleSaveNote = async () => {
     if (!currentNote) return;
+
+    triggerHaptic();
 
     const isContentEmpty = !currentNote.content.trim();
     const isTitleEmpty = !currentNote.title.trim();
@@ -512,6 +553,35 @@ export default function App() {
       return [updatedNote, ...prev];
     });
 
+    // Handle Notifications
+    try {
+      // Convert string ID to a numeric ID for LocalNotifications
+      const numericId = parseInt(updatedNote.id.replace(/[^0-9]/g, '').slice(0, 9)) || Math.floor(Math.random() * 1000000);
+
+      await LocalNotifications.cancel({ notifications: [{ id: numericId }] });
+
+      if (updatedNote.reminder) {
+        const reminderDate = new Date(updatedNote.reminder);
+        if (reminderDate > new Date()) {
+          await LocalNotifications.schedule({
+            notifications: [
+              {
+                title: updatedNote.title || 'Note Reminder',
+                body: updatedNote.content.slice(0, 100) + (updatedNote.content.length > 100 ? '...' : ''),
+                id: numericId,
+                schedule: { at: reminderDate },
+                sound: 'default',
+                actionTypeId: '',
+                extra: null
+              }
+            ]
+          });
+        }
+      }
+    } catch (e) {
+      console.warn('Failed to schedule notification', e);
+    }
+
     setIsEditing(false);
     setIsSettingsOpen(false);
     setCurrentNote(null);
@@ -524,9 +594,21 @@ export default function App() {
     });
   };
 
-  const handleDeleteNote = (id: string, e?: React.MouseEvent) => {
+  const handleDeleteNote = async (id: string, e?: React.MouseEvent) => {
     e?.stopPropagation();
+    triggerHaptic();
+
     setNotes(prev => prev.filter(n => n.id !== id));
+
+    try {
+      const numericId = parseInt(id.replace(/[^0-9]/g, '').slice(0, 9)) || 0;
+      if (numericId) {
+        await LocalNotifications.cancel({ notifications: [{ id: numericId }] });
+      }
+    } catch (e) {
+      console.warn('Failed to cancel notification', e);
+    }
+
     if (currentNote?.id === id) {
       setIsEditing(false);
       setIsSettingsOpen(false);
@@ -564,7 +646,7 @@ export default function App() {
               <div className="px-4 sm:px-6 pt-10 sm:pt-12 pb-4 sm:pb-6">
                 <div className="flex items-center justify-between mb-6">
                   <div className="flex flex-col">
-                    <h2 className="text-xl sm:text-2xl font-bold tracking-tight text-app-text">X NOTES</h2>
+                    <h2 className="text-lg sm:text-xl font-bold tracking-tight text-app-text">X NOTES</h2>
                     <span className="text-[10px] sm:text-xs font-medium text-app-muted mt-0.5">Workspace</span>
                   </div>
                   <button 
@@ -680,7 +762,7 @@ export default function App() {
                       <ChevronLeft className="w-5 h-5 sm:w-6 sm:h-6" />
                     </button>
                   )}
-                  <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-app-text">
+                  <h1 className="text-lg sm:text-xl font-bold tracking-tight text-app-text">
                     {activeMainPage === 'home' ? 'X NOTES' : 
                      activeMainPage === 'favorites' ? 'FAVORITES' : 'ARCHIVE'}
                   </h1>
@@ -837,7 +919,10 @@ export default function App() {
                     <p className="text-xs text-app-muted">Keep at the top of the list</p>
                   </div>
                   <button
-                    onClick={() => setCurrentNote(prev => prev ? { ...prev, isPinned: !prev.isPinned } : null)}
+                    onClick={() => {
+                      triggerHaptic();
+                      setCurrentNote(prev => prev ? { ...prev, isPinned: !prev.isPinned } : null);
+                    }}
                     className={cn(
                       "w-10 h-5 rounded-full transition-colors relative",
                       currentNote?.isPinned ? "bg-app-text" : "bg-app-accent"
@@ -863,7 +948,10 @@ export default function App() {
                   </div>
                   <button
                     disabled={currentNote?.isArchived}
-                    onClick={() => setCurrentNote(prev => prev ? { ...prev, isFavorite: !prev.isFavorite } : null)}
+                    onClick={() => {
+                      triggerHaptic();
+                      setCurrentNote(prev => prev ? { ...prev, isFavorite: !prev.isFavorite } : null);
+                    }}
                     className={cn(
                       "w-10 h-5 rounded-full transition-colors relative",
                       currentNote?.isFavorite ? "bg-amber-400" : "bg-app-accent",
@@ -890,7 +978,10 @@ export default function App() {
                   </div>
                   <button
                     disabled={currentNote?.isFavorite}
-                    onClick={() => setCurrentNote(prev => prev ? { ...prev, isArchived: !prev.isArchived } : null)}
+                    onClick={() => {
+                      triggerHaptic();
+                      setCurrentNote(prev => prev ? { ...prev, isArchived: !prev.isArchived } : null);
+                    }}
                     className={cn(
                       "w-10 h-5 rounded-full transition-colors relative",
                       currentNote?.isArchived ? "bg-app-muted" : "bg-app-accent",
@@ -914,7 +1005,10 @@ export default function App() {
                     <p className="text-xs text-app-muted">Disable editing for this note</p>
                   </div>
                   <button
-                    onClick={() => setCurrentNote(prev => prev ? { ...prev, isReadMode: !prev.isReadMode } : null)}
+                    onClick={() => {
+                      triggerHaptic();
+                      setCurrentNote(prev => prev ? { ...prev, isReadMode: !prev.isReadMode } : null);
+                    }}
                     className={cn(
                       "w-10 h-5 rounded-full transition-colors relative",
                       currentNote?.isReadMode ? "bg-indigo-500" : "bg-app-accent"
@@ -1144,7 +1238,7 @@ export default function App() {
                 value={currentNote?.title || ''}
                 onChange={(e) => setCurrentNote(prev => prev ? { ...prev, title: e.target.value } : null)}
                 className={cn(
-                  "mb-4 sm:mb-6 w-full bg-transparent text-2xl sm:text-3xl font-black text-app-text placeholder:text-app-muted/30 focus:outline-none",
+                  "mb-4 sm:mb-6 w-full bg-transparent text-xl sm:text-2xl font-black text-app-text placeholder:text-app-muted/30 focus:outline-none",
                   currentNote?.isReadMode && "cursor-default"
                 )}
               />
