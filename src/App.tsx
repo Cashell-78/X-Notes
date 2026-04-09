@@ -221,8 +221,7 @@ export default function App() {
     // Sync Status Bar
     const syncStatusBar = async () => {
       try {
-        await StatusBar.setOverlaysWebView({ overlay: true });
-        await StatusBar.setBackgroundColor({ color: '#00000000' });
+        await StatusBar.setBackgroundColor({ color: activeTheme === 'dark' ? '#000000' : '#f8fafc' });
         await StatusBar.setStyle({ style: activeTheme === 'dark' ? Style.Dark : Style.Light });
       } catch (e) {
         console.warn('StatusBar not available');
@@ -239,16 +238,6 @@ export default function App() {
         if (status.display !== 'granted') {
           await LocalNotifications.requestPermissions();
         }
-
-        // Create a default channel for Android
-        await LocalNotifications.createChannel({
-          id: 'reminders',
-          name: 'Note Reminders',
-          description: 'Notifications for note reminders',
-          importance: 5,
-          visibility: 1,
-          vibration: true
-        });
       } catch (e) {
         console.warn('LocalNotifications not available');
       }
@@ -580,9 +569,8 @@ export default function App() {
                 title: updatedNote.title || 'Note Reminder',
                 body: updatedNote.content.slice(0, 100) + (updatedNote.content.length > 100 ? '...' : ''),
                 id: numericId,
-                schedule: { at: reminderDate, allowWhileIdle: true },
+                schedule: { at: reminderDate },
                 sound: 'default',
-                channelId: 'reminders',
                 actionTypeId: '',
                 extra: null
               }
